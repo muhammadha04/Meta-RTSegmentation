@@ -52,10 +52,28 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         public void CapturePosition()
         {
-            // Capture the camera pose and position the canvas in front of the camera
+            // 1. Capture the camera pose
             m_captureCameraPose = m_cameraAccess.GetCameraPose();
+
+            // 2. Calculate the position (correctly uses full camera rotation)
             m_capturePosition = m_captureCameraPose.position + m_captureCameraPose.rotation * Vector3.forward * m_canvasDistance;
-            m_captureRotation = Quaternion.Euler(0, m_captureCameraPose.rotation.eulerAngles.y, 0);
+
+            // 3. Calculate the forward direction from the camera to the canvas position
+            Vector3 forwardDirection = m_capturePosition - m_captureCameraPose.position;
+
+            // 4. CRITICAL FIX FOR TILT: Flatten the direction vector to the world X-Z plane.
+            // This removes the camera's pitch (X) component from the rotation calculation.
+            forwardDirection.y = 0;
+
+            // 5. Calculate the rotation: Look along the flattened direction, using WORLD UP (0, 1, 0)
+            // This explicitly prevents any roll (Z) component, locking the canvas upright.
+            m_captureRotation = Quaternion.LookRotation(forwardDirection, Vector3.up);
+
+            // If forwardDirection is zero (shouldn't happen), default to identity
+            if (forwardDirection == Vector3.zero)
+            {
+                m_captureRotation = Quaternion.identity;
+            }
         }
 
         public Vector3 GetCapturedCameraPosition()

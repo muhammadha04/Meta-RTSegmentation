@@ -1,4 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+// Updated with spatial segmentation support - stores world-space dimensions
 
 using System.Collections.Generic;
 using Meta.XR;
@@ -13,7 +14,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
     [MetaCodeSample("PassthroughCameraApiSamples-MultiObjectDetection")]
     public class SentisInferenceUiManager : MonoBehaviour
     {
-        [Header("Placement configureation")]
+        [Header("Placement configuration")]
         [SerializeField] private EnvironmentRayCastSampleManager m_environmentRaycast;
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
 
@@ -34,19 +35,33 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private List<GameObject> m_boxPool = new();
         private Transform m_displayLocation;
 
-        //bounding box data
+        // Bounding box data with spatial segmentation support
         public struct BoundingBox
         {
+            // Canvas-space coordinates
             public float CenterX;
             public float CenterY;
             public float Width;
             public float Height;
+
+            // Metadata
             public string Label;
-            public Vector3? WorldPos;
             public string ClassName;
-            // ADDED: Store mask coefficients for segmentation processing
+
+            // World-space data
+            public Vector3? WorldPos;
+
+            // Segmentation data
             public float[] MaskCoefficients;
-            public Texture2D SegmentationMask;  // ADDED: Generated mask texture
+            public Texture2D SegmentationMask;
+
+            // Normalized coordinates (0-1 range) for world-space estimation
+            public float NormalizedWidth;
+            public float NormalizedHeight;
+
+            // Estimated real-world dimensions in meters
+            public float EstimatedWorldWidth;
+            public float EstimatedWorldHeight;
         }
 
         #region Unity Functions
@@ -76,8 +91,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             m_detectionCanvas.CapturePosition();
         }
 
-        // CHANGED: Signature now accepts Tensor<float> prototypeMasks instead of Tensor<int> labelIDs
-        // For YOLOv11n-seg: output shape is (1, 116, 8400) where 116 = 4 box + 80 classes + 32 mask coeffs
         public void DrawUIBoxes(Tensor<float> output, Tensor<float> prototypeMasks, float imageWidth, float imageHeight, Pose cameraPose)
         {
             m_detectionCanvas.UpdatePosition();
@@ -89,25 +102,21 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             float displayWidth = m_displayImage.rectTransform.rect.width;
             var displayHeight = m_displayImage.rectTransform.rect.height;
 
-            var boxesFound = output.shape[2];  // 8400 anchor boxes
+            var boxesFound = output.shape[2];
             Debug.Log($"DEBUG: Total anchor boxes = {boxesFound}");
 
-            // ADDED: Collect all valid detections first
             List<DetectionCandidate> candidates = new List<DetectionCandidate>();
 
-            // First pass: collect all detections above confidence threshold
             for (var n = 0; n < boxesFound; n++)
             {
                 int classId;
                 float confidence;
                 GetClassIdAndConfidence(output, n, out classId, out confidence);
 
-                // Filter by confidence threshold (hardcoded 0.75)
                 if (confidence < 0.75f)
                     continue;
 
-                // Filter by class - only person (0) and tv (62)
-                if (classId != 43 && classId != 62 && classId!= 67)
+                if (classId != 43 && classId != 62 && classId != 67 && classId != 64 && classId != 66 && classId != 56)
                     continue;
 
                 candidates.Add(new DetectionCandidate
@@ -122,24 +131,91 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 });
             }
 
-            // ADDED: Apply NMS with hardcoded IOU threshold 0.5
             List<DetectionCandidate> filteredCandidates = ApplyNMS(candidates, 0.5f);
 
             Debug.Log($"DEBUG: Before NMS: {candidates.Count}, After NMS: {filteredCandidates.Count}");
 
-            // Second pass: draw the filtered detections
             int validDetections = 0;
             foreach (var candidate in filteredCandidates)
             {
+                // Normalized coordinates (0-1 range)
                 var normalizedCenterX = candidate.X / imageWidth;
                 var normalizedCenterY = candidate.Y / imageHeight;
+                var normalizedWidth = candidate.W / imageWidth;
+                var normalizedHeight = candidate.H / imageHeight;
+
+                // Canvas-space coordinates
                 var centerX = displayWidth * (normalizedCenterX - 0.5f);
                 var centerY = displayHeight * (normalizedCenterY - 0.5f);
 
                 var classname = m_labels[candidate.ClassId].Replace(" ", "_");
 
-                var ray = m_cameraAccess.ViewportPointToRay(new Vector2(normalizedCenterX, 1.0f - normalizedCenterY), cameraPose);
-                var worldPos = m_environmentRaycast.Raycast(ray);
+                // Raycast center to get world position
+                var centerRay = m_cameraAccess.ViewportPointToRay(
+                    new Vector2(normalizedCenterX, 1.0f - normalizedCenterY),
+                    cameraPose
+                );
+                var worldPos = m_environmentRaycast.Raycast(centerRay);
+
+                // Estimate world dimensions using corner raycasts
+                float estimatedWorldWidth = 0f;
+                float estimatedWorldHeight = 0f;
+
+                if (worldPos.HasValue)
+                {
+                    // Calculate corner positions
+                    float left = normalizedCenterX - normalizedWidth / 2f;
+                    float right = normalizedCenterX + normalizedWidth / 2f;
+                    float top = normalizedCenterY - normalizedHeight / 2f;
+                    float bottom = normalizedCenterY + normalizedHeight / 2f;
+
+                    // Clamp to valid viewport range
+                    left = Mathf.Clamp01(left);
+                    right = Mathf.Clamp01(right);
+                    top = Mathf.Clamp01(top);
+                    bottom = Mathf.Clamp01(bottom);
+
+                    // Raycast corners (Y is flipped for viewport coordinates)
+                    var leftRay = m_cameraAccess.ViewportPointToRay(new Vector2(left, 1f - normalizedCenterY), cameraPose);
+                    var rightRay = m_cameraAccess.ViewportPointToRay(new Vector2(right, 1f - normalizedCenterY), cameraPose);
+                    var topRay = m_cameraAccess.ViewportPointToRay(new Vector2(normalizedCenterX, 1f - top), cameraPose);
+                    var bottomRay = m_cameraAccess.ViewportPointToRay(new Vector2(normalizedCenterX, 1f - bottom), cameraPose);
+
+                    var worldLeft = m_environmentRaycast.Raycast(leftRay);
+                    var worldRight = m_environmentRaycast.Raycast(rightRay);
+                    var worldTop = m_environmentRaycast.Raycast(topRay);
+                    var worldBottom = m_environmentRaycast.Raycast(bottomRay);
+
+                    // Calculate world dimensions from successful raycasts
+                    if (worldLeft.HasValue && worldRight.HasValue)
+                    {
+                        estimatedWorldWidth = Vector3.Distance(worldLeft.Value, worldRight.Value);
+                    }
+
+                    if (worldTop.HasValue && worldBottom.HasValue)
+                    {
+                        estimatedWorldHeight = Vector3.Distance(worldTop.Value, worldBottom.Value);
+                    }
+
+                    // Fallback: estimate from depth and normalized dimensions
+                    if (estimatedWorldWidth < 0.01f || estimatedWorldHeight < 0.01f)
+                    {
+                        float depth = Vector3.Distance(cameraPose.position, worldPos.Value);
+                        // Approximate based on typical Quest 3 camera FOV (~90 degrees horizontal)
+                        float fovScale = 2f * depth * Mathf.Tan(45f * Mathf.Deg2Rad);
+
+                        if (estimatedWorldWidth < 0.01f)
+                        {
+                            estimatedWorldWidth = normalizedWidth * fovScale;
+                        }
+                        if (estimatedWorldHeight < 0.01f)
+                        {
+                            estimatedWorldHeight = normalizedHeight * fovScale;
+                        }
+                    }
+
+                    Debug.Log($"DEBUG: {classname} world size estimate: {estimatedWorldWidth:F3}m x {estimatedWorldHeight:F3}m");
+                }
 
                 // Extract mask coefficients
                 float[] maskCoeffs = new float[32];
@@ -148,22 +224,20 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     maskCoeffs[i] = output[0, 84 + i, candidate.Index];
                 }
 
-                // ADDED: Generate full segmentation mask (160x160)
+                // Generate segmentation mask
                 float[,] rawMask = SegmentationProcessor.GenerateMask(maskCoeffs, prototypeMasks);
 
-                // ADDED: Create texture with color (green for person, blue for TV)
-                Color maskColor = candidate.ClassId == 0 ? new Color(0, 1, 0, 0.5f) : new Color(0, 0, 1, 0.5f);  // Green for person, blue for TV
+                Color maskColor = candidate.ClassId == 0 ? new Color(0, 1, 0, 0.5f) : new Color(0, 0, 1, 0.5f);
 
-                // FIXED: Crop mask to bounding box region and create texture
                 Texture2D maskTexture = SegmentationProcessor.MaskToTexture(
                     rawMask,
                     maskColor,
-                    candidate.X,      // Box center X in image coordinates
-                    candidate.Y,      // Box center Y in image coordinates
-                    candidate.W,      // Box width in image coordinates
-                    candidate.H,      // Box height in image coordinates
-                    imageWidth,       // Full image width (640)
-                    imageHeight       // Full image height (640)
+                    candidate.X,
+                    candidate.Y,
+                    candidate.W,
+                    candidate.H,
+                    imageWidth,
+                    imageHeight
                 );
 
                 var box = new BoundingBox
@@ -173,10 +247,14 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     ClassName = classname,
                     Width = candidate.W * (displayWidth / imageWidth),
                     Height = candidate.H * (displayHeight / imageHeight),
-                    Label = $"Class: {classname} Conf: {candidate.Confidence:F2} Center: {normalizedCenterX:F2},{normalizedCenterY:F2}",
+                    Label = $"Class: {classname} Conf: {candidate.Confidence:F2}",
                     WorldPos = worldPos,
                     MaskCoefficients = maskCoeffs,
-                    SegmentationMask = maskTexture  // ADDED: Store generated mask
+                    SegmentationMask = maskTexture,
+                    NormalizedWidth = normalizedWidth,
+                    NormalizedHeight = normalizedHeight,
+                    EstimatedWorldWidth = estimatedWorldWidth,
+                    EstimatedWorldHeight = estimatedWorldHeight
                 };
 
                 BoxDrawn.Add(box);
@@ -191,7 +269,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             OnObjectsDetected?.Invoke(validDetections);
         }
 
-        // ADDED: Helper struct for NMS
         private struct DetectionCandidate
         {
             public int Index;
@@ -200,7 +277,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             public float X, Y, W, H;
         }
 
-        // ADDED: Non-Maximum Suppression
         private List<DetectionCandidate> ApplyNMS(List<DetectionCandidate> candidates, float iouThreshold)
         {
             candidates.Sort((a, b) => b.Confidence.CompareTo(a.Confidence));
@@ -234,7 +310,6 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             return result;
         }
 
-        // ADDED: Calculate IOU
         private float CalculateIOU(DetectionCandidate a, DetectionCandidate b)
         {
             float x1 = Mathf.Max(a.X - a.W / 2, b.X - b.W / 2);
@@ -253,15 +328,11 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             return intersectionArea / (unionArea + 1e-6f);
         }
 
-        // ADDED: Helper method to extract class ID and confidence from output tensor
-        // Finds the index and value of maximum score among the 80 class channels (4-83)
-        // Tensor shape is (1, 116, 8400) so indexing is [0, channel, detection]
         private void GetClassIdAndConfidence(Tensor<float> output, int detectionIndex, out int classId, out float confidence)
         {
             classId = 0;
-            confidence = output[0, 4, detectionIndex];  // First class score
+            confidence = output[0, 4, detectionIndex];
 
-            // Find max score among channels 4-83 (80 classes)
             for (int i = 1; i < 80; i++)
             {
                 float score = output[0, 4 + i, detectionIndex];
@@ -302,18 +373,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 panel = CreateNewBox(m_boxColor);
             }
 
-            panel.transform.localPosition = new Vector3(box.CenterX, -box.CenterY, box.WorldPos.HasValue ? box.WorldPos.Value.z : 0.0f);
-
-            // Calculate direction but lock Y rotation only (prevents tilting)
-            Vector3 directionToCamera = panel.transform.position - m_detectionCanvas.GetCapturedCameraPosition();
-            directionToCamera.y = 0;  // Lock to horizontal plane
-            Quaternion panelRotation;
-            if (directionToCamera != Vector3.zero)
-                panelRotation = Quaternion.LookRotation(directionToCamera);
-            else
-                panelRotation = Quaternion.identity;
-
-            panel.transform.rotation = panelRotation;
+            // Use LOCAL transforms only - let canvas handle world positioning
+            panel.transform.localPosition = new Vector3(box.CenterX, -box.CenterY, 0.0f);
+            panel.transform.localRotation = Quaternion.identity;
 
             var rt = panel.GetComponent<RectTransform>();
             rt.sizeDelta = new Vector2(box.Width, box.Height);
@@ -322,12 +384,11 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             label.text = box.Label;
             label.fontSize = 12;
 
-            // FIXED: Update segmentation mask overlay and counter-rotate it to stay flat
+            // Segmentation mask on canvas
             var maskImage = panel.transform.Find("SegmentationMask")?.GetComponent<RawImage>();
             if (maskImage != null && box.SegmentationMask != null)
             {
                 maskImage.texture = box.SegmentationMask;
-                // CRITICAL FIX: Counter-rotate the mask to keep it aligned with the UI plane
                 maskImage.transform.localRotation = Quaternion.identity;
                 maskImage.gameObject.SetActive(true);
             }
@@ -344,7 +405,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             img.fillCenter = false;
             panel.transform.SetParent(m_displayLocation, false);
 
-            // ADDED: Create segmentation mask overlay
+            // Create segmentation mask overlay
             var maskObj = new GameObject("SegmentationMask");
             _ = maskObj.AddComponent<CanvasRenderer>();
             maskObj.transform.SetParent(panel.transform, false);
@@ -355,7 +416,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             maskRt.anchorMax = new Vector2(1, 1);
             maskRt.offsetMin = Vector2.zero;
             maskRt.offsetMax = Vector2.zero;
-            maskObj.SetActive(false);  // Hidden until mask is set
+            maskObj.SetActive(false);
 
             var text = new GameObject("ObjectLabel");
             _ = text.AddComponent<CanvasRenderer>();

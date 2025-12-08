@@ -49,7 +49,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 {
                     m_writtingTime = m_writtingSpeed;
 
-                    m_writtingSound?.Play();
+                    //m_writtingSound?.Play();
 
                     var nextChar = m_currentInfo.Substring(m_currentInfoIndex, 1);
                     m_labelInfo.text += nextChar;

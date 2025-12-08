@@ -885,7 +885,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _monoscopic: 0
   _sharpenType: 0
-  _enableDynamicResolution: 1
+  _enableDynamicResolution: 0
   minDynamicResolutionScale: 1
   maxDynamicResolutionScale: 1
   quest2MinDynamicResolutionScale: 0.7
@@ -935,7 +935,7 @@ MonoBehaviour:
   requestBodyTrackingPermissionOnStartup: 0
   requestFaceTrackingPermissionOnStartup: 0
   requestEyeTrackingPermissionOnStartup: 0
-  requestScenePermissionOnStartup: 0
+  requestScenePermissionOnStartup: 1
   requestRecordAudioPermissionOnStartup: 0
   requestPassthroughCameraAccessPermissionOnStartup: 0
   _localDimming: 1
@@ -1354,10 +1354,40 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 1744462753}
     m_Modifications:
+    - target: {fileID: 1167117369177376480, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2447241005283040037, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+      propertyPath: m_Text
+      value: Segmentation Testing
+      objectReference: {fileID: 0}
+    - target: {fileID: 4852960523854187081, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5035866059478431671, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+      propertyPath: m_Text
+      value: "Unity Sentis version: 2.1.3\nAI model: Yolo-11n-Seg \nDetecting objects:
+        0\nObject identified: 0"
+      objectReference: {fileID: 0}
+    - target: {fileID: 5185259287786992558, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+      propertyPath: m_Text
+      value: '-----------------------------------------------------------
+
+        <b>SEG
+        DEBUGGING</b>
+
+        -----------------------------------------------------------'
+      objectReference: {fileID: 0}
     - target: {fileID: 5846769668076299689, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
       propertyPath: OnPause.m_PersistentCalls.m_Calls.Array.data[0].m_Target
       value: 
       objectReference: {fileID: 1542092273}
+    - target: {fileID: 6850496571433932089, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 8722207748505512710, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
       propertyPath: m_Name
       value: DetectionUiMenuPrefab
@@ -1521,7 +1551,7 @@ PrefabInstance:
     - target: {fileID: 7042133912099342453, guid: 946c4bcf5ee78c2438bd71dd2f9fe1f9, type: 3}
       propertyPath: m_placeSound
       value: 
-      objectReference: {fileID: 0}
+      objectReference: {fileID: 8587535026074093614}
     - target: {fileID: 7042133912099342453, guid: 946c4bcf5ee78c2438bd71dd2f9fe1f9, type: 3}
       propertyPath: m_uiInference
       value: 
@@ -1555,9 +1585,17 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 1373946501}
     - target: {fileID: 7042133912099342453, guid: 946c4bcf5ee78c2438bd71dd2f9fe1f9, type: 3}
+      propertyPath: m_segmentationMaterial
+      value: 
+      objectReference: {fileID: 0}
+    - target: {fileID: 7042133912099342453, guid: 946c4bcf5ee78c2438bd71dd2f9fe1f9, type: 3}
       propertyPath: m_webCamTextureManager
       value: 
       objectReference: {fileID: 1373946501}
+    - target: {fileID: 7042133912099342453, guid: 946c4bcf5ee78c2438bd71dd2f9fe1f9, type: 3}
+      propertyPath: m_segmentationMarkerPrefab
+      value: 
+      objectReference: {fileID: 0}
     - target: {fileID: 7042133912099342453, guid: 946c4bcf5ee78c2438bd71dd2f9fe1f9, type: 3}
       propertyPath: OnObjectsIdentified.m_PersistentCalls.m_Calls.Array.data[0].m_Target
       value: 
@@ -1615,6 +1653,50 @@ PrefabInstance:
       propertyPath: m_Name
       value: SentisInferenceManagerPrefab
       objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_Pivot.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_Pivot.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_SizeDelta.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_SizeDelta.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalScale.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalScale.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalScale.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7341598050606267497, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 7913708705614608778, guid: 927c1b782bb796b4b9b433d533cbccca, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0
@@ -1663,6 +1745,11 @@ PrefabInstance:
 --- !u!224 &8587535026074093613 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 8722207748505512711, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
+  m_PrefabInstance: {fileID: 1019656467722773290}
+  m_PrefabAsset: {fileID: 0}
+--- !u!82 &8587535026074093614 stripped
+AudioSource:
+  m_CorrespondingSourceObject: {fileID: 6850496571433932089, guid: 259c0c899b7e0c14aa431eefdc0aacc6, type: 3}
   m_PrefabInstance: {fileID: 1019656467722773290}
   m_PrefabAsset: {fileID: 0}
 --- !u!1660057539 &9223372036854775807
