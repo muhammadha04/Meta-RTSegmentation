@@ -115,8 +115,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
                 if (confidence < 0.75f)
                     continue;
-
-                if (classId != 43 && classId != 62 && classId != 67 && classId != 64 && classId != 66 && classId != 56)
+                //classId != 43 && classId != 62 && classId != 67 && classId != 64 && classId != 66 && classId != 56
+                //64mouse,66keyboard,56 chair
+                if (classId != 56 && classId != 66 && classId != 64)
                     continue;
 
                 candidates.Add(new DetectionCandidate
