@@ -28,6 +28,14 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 yield break;
             }
 
+            // CRITICAL FIX: Detach canvas from camera so it doesn't follow headset
+            Canvas canvas = m_detectionCanvas.GetComponent<Canvas>();
+            if (canvas != null)
+            {
+                canvas.worldCamera = null;  // Remove camera reference
+                Debug.Log("Canvas camera reference removed - canvas is now independent");
+            }
+
             while (!m_cameraAccess.IsPlaying)
             {
                 yield return null;
@@ -55,25 +63,12 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // 1. Capture the camera pose
             m_captureCameraPose = m_cameraAccess.GetCameraPose();
 
-            // 2. Calculate the position (correctly uses full camera rotation)
-            m_capturePosition = m_captureCameraPose.position + m_captureCameraPose.rotation * Vector3.forward * m_canvasDistance;
+            // 2. Position canvas directly in front of camera (in camera's local space)
+            m_capturePosition = m_captureCameraPose.position +
+                               m_captureCameraPose.rotation * Vector3.forward * m_canvasDistance;
 
-            // 3. Calculate the forward direction from the camera to the canvas position
-            Vector3 forwardDirection = m_capturePosition - m_captureCameraPose.position;
-
-            // 4. CRITICAL FIX FOR TILT: Flatten the direction vector to the world X-Z plane.
-            // This removes the camera's pitch (X) component from the rotation calculation.
-            forwardDirection.y = 0;
-
-            // 5. Calculate the rotation: Look along the flattened direction, using WORLD UP (0, 1, 0)
-            // This explicitly prevents any roll (Z) component, locking the canvas upright.
-            m_captureRotation = Quaternion.LookRotation(forwardDirection, Vector3.up);
-
-            // If forwardDirection is zero (shouldn't happen), default to identity
-            if (forwardDirection == Vector3.zero)
-            {
-                m_captureRotation = Quaternion.identity;
-            }
+            // 3. Canvas rotation should exactly match camera rotation when captured
+            m_captureRotation = m_captureCameraPose.rotation;
         }
 
         public Vector3 GetCapturedCameraPosition()

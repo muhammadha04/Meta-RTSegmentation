@@ -8,6 +8,7 @@ using Meta.XR;
 using Meta.XR.Samples;
 using UnityEngine;
 using UnityEngine.Events;
+using UnityEngine.UIElements;
 
 namespace PassthroughCameraSamples.MultiObjectDetection
 {
@@ -41,6 +42,14 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [Tooltip("Default size if world estimation fails (meters)")]
         [SerializeField] private float m_fallbackSegmentationSize = 0.3f;
 
+        [Header("Auto-Update Segmentation")]
+        [Tooltip("Automatically update segmentations for objects in view")]
+        [SerializeField] private bool m_autoUpdateSegmentations = true;
+        [Tooltip("How often to check for updates (seconds)")]
+        [SerializeField] private float m_autoUpdateInterval = 0.5f;
+        [Tooltip("Minimum quality improvement needed to trigger update (0-1). Higher = fewer updates")]
+        [SerializeField] private float m_qualityImprovementThreshold = 0.05f;
+
         [Space(10)]
         public UnityEvent<int> OnObjectsIdentified;
 
@@ -50,6 +59,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         private bool m_isStarted = false;
         private bool m_isSentisReady = false;
         private float m_delayPauseBackTime = 0;
+
+        // Auto-update timer
+        private float m_autoUpdateTimer = 0f;
 
         // Cached shader for Quest compatibility
         private Shader m_segmentationShader;
@@ -106,6 +118,17 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 if (OVRInput.GetUp(m_resetButton) && m_delayPauseBackTime <= 0)
                 {
                     ResetAllMarkers();
+                }
+
+                // Auto-update segmentations for objects currently in view
+                if (m_autoUpdateSegmentations && m_enableSpatialSegmentation && !m_isPaused)
+                {
+                    m_autoUpdateTimer += Time.deltaTime;
+                    if (m_autoUpdateTimer >= m_autoUpdateInterval)
+                    {
+                        m_autoUpdateTimer = 0f;
+                        AutoUpdateSegmentationsInView();
+                    }
                 }
 
                 // Cooldown for buttons after return from the pause menu
@@ -286,14 +309,177 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     Vector3 toCamera = (cam.centerEyeAnchor.position - position).normalized;
                     position += toCamera * m_segmentationSurfaceOffset;
                 }
+                // Get direction from object to camera for offset AND orientation
+                cam = FindFirstObjectByType<OVRCameraRig>();
+                if (cam != null)
+                {
+                    Vector3 toCamera = (cam.centerEyeAnchor.position - position).normalized;
 
-                segObj.transform.position = position;
+                    // Orient the segmentation to face the camera (but locked, not billboard)
+                    // The quad's forward (Z) should point toward the camera
+                    segObj.transform.rotation = Quaternion.LookRotation(toCamera, Vector3.up);
+
+                    // Apply offset AFTER rotation
+                    position += toCamera * m_segmentationSurfaceOffset;
+                    segObj.transform.position = position;
+                }
+                else
+                {
+                    segObj.transform.position = position;
+                }
+
+                // Store quality metrics on the billboard component
+                var billboard = segObj.GetComponent<SpatialSegmentationBillboard>();
+                if (billboard != null)
+                {
+                    billboard.Confidence = box.Confidence;
+                    billboard.Coverage = box.Coverage;
+                }
+
                 m_spawnedSegmentations.Add(segObj);
 
-                Debug.Log($"Spawned segmentation '{box.ClassName}' at {position}, size: {worldWidth:F3}x{worldHeight:F3}m, tex: {maskTex.width}x{maskTex.height}");
+                Debug.Log($"Spawned segmentation '{box.ClassName}' at {position}, size: {worldWidth:F3}x{worldHeight:F3}m, quality: {billboard?.QualityScore:F3}");
             }
         }
 
+        /// <summary>
+        /// Auto-update segmentations for objects currently being detected (in view)
+        /// Only updates if the new detection has better quality (confidence + coverage)
+        /// </summary>
+        private void AutoUpdateSegmentationsInView()
+        {
+            if (m_uiInference.BoxDrawn.Count == 0)
+                return;
+
+            // For each currently detected object, check if we should update its segmentation
+            foreach (var box in m_uiInference.BoxDrawn)
+            {
+                if (!box.WorldPos.HasValue || box.SegmentationMask == null)
+                    continue;
+
+                // Calculate quality score for new detection
+                float newQualityScore = box.Confidence * 0.7f + box.Coverage * 0.3f;
+
+                // Check if we have an existing segmentation for this object
+                foreach (var seg in m_spawnedSegmentations)
+                {
+                    if (seg == null)
+                        continue;
+
+                    var billboard = seg.GetComponent<SpatialSegmentationBillboard>();
+                    if (billboard == null || billboard.ClassName != box.ClassName)
+                        continue;
+
+                    // Found existing segmentation for this class - check if it's nearby
+                    var dist = Vector3.Distance(seg.transform.position, box.WorldPos.Value);
+                    if (dist > m_spawnDistance * 2f)
+                        continue;
+
+                    // Compare quality scores - only update if significantly better
+                    float existingQualityScore = billboard.QualityScore;
+                    float improvement = newQualityScore - existingQualityScore;
+
+                    if (improvement > m_qualityImprovementThreshold)
+                    {
+                        Debug.Log($"Auto-updating '{box.ClassName}': quality {existingQualityScore:F3} -> {newQualityScore:F3} (improvement: {improvement:F3})");
+                        SpawnSpatialSegmentationWithQuality(box, newQualityScore);
+                    }
+
+                    break; // Found matching segmentation, move to next box
+                }
+            }
+        }
+
+        /// <summary>
+        /// Spawn segmentation and store quality metrics for future comparison
+        /// </summary>
+        private void SpawnSpatialSegmentationWithQuality(SentisInferenceUiManager.BoundingBox box, float qualityScore)
+        {
+            if (!box.WorldPos.HasValue || box.SegmentationMask == null)
+                return;
+
+            // Remove existing segmentation for this object
+            for (int i = m_spawnedSegmentations.Count - 1; i >= 0; i--)
+            {
+                var seg = m_spawnedSegmentations[i];
+                if (seg != null)
+                {
+                    var billboard = seg.GetComponent<SpatialSegmentationBillboard>();
+                    var dist = Vector3.Distance(seg.transform.position, box.WorldPos.Value);
+
+                    if (dist < m_spawnDistance && billboard != null && billboard.ClassName == box.ClassName)
+                    {
+                        Destroy(seg);
+                        m_spawnedSegmentations.RemoveAt(i);
+                        break;
+                    }
+                }
+            }
+
+            // Get texture dimensions for aspect ratio
+            Texture2D maskTex = box.SegmentationMask;
+            float textureAspect = (float)maskTex.width / (float)maskTex.height;
+
+            // Calculate world dimensions
+            float worldWidth, worldHeight;
+
+            if (box.EstimatedWorldWidth > 0.01f && box.EstimatedWorldHeight > 0.01f)
+            {
+                worldWidth = box.EstimatedWorldWidth;
+                worldHeight = box.EstimatedWorldHeight;
+            }
+            else
+            {
+                OVRCameraRig cameraRig = FindFirstObjectByType<OVRCameraRig>();
+                if (cameraRig != null)
+                {
+                    float distance = Vector3.Distance(cameraRig.centerEyeAnchor.position, box.WorldPos.Value);
+                    float fovScale = distance * 1.2f;
+                    worldWidth = box.NormalizedWidth * fovScale;
+                    worldHeight = box.NormalizedHeight * fovScale;
+                }
+                else
+                {
+                    worldWidth = m_fallbackSegmentationSize * textureAspect;
+                    worldHeight = m_fallbackSegmentationSize;
+                }
+            }
+
+            worldWidth = Mathf.Max(worldWidth, 0.05f);
+            worldHeight = Mathf.Max(worldHeight, 0.05f);
+
+            GameObject segObj = CreateSegmentationMesh(maskTex, worldWidth, worldHeight, box.ClassName);
+
+            if (segObj != null)
+            {
+                Vector3 position = box.WorldPos.Value;
+
+                // Get direction from object to camera for offset AND orientation
+                OVRCameraRig cam = FindFirstObjectByType<OVRCameraRig>();
+                if (cam != null)
+                {
+                    Vector3 toCamera = (cam.centerEyeAnchor.position - position).normalized;
+
+                    // Orient the segmentation to face the camera (but locked, not billboard)
+                    segObj.transform.rotation = Quaternion.LookRotation(toCamera, Vector3.up);
+
+                    // Apply offset AFTER rotation
+                    position += toCamera * m_segmentationSurfaceOffset;
+                }
+
+                segObj.transform.position = position;
+
+                // Store quality metrics on the billboard component
+                var billboardComponent = segObj.GetComponent<SpatialSegmentationBillboard>();
+                if (billboardComponent != null)
+                {
+                    billboardComponent.Confidence = box.Confidence;
+                    billboardComponent.Coverage = box.Coverage;
+                }
+
+                m_spawnedSegmentations.Add(segObj);
+            }
+        }
         private GameObject CreateSegmentationMesh(Texture2D texture, float worldWidth, float worldHeight, string className)
         {
             GameObject obj = new GameObject($"SpatialSegmentation_{className}");
@@ -426,10 +612,16 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
     /// <summary>
     /// Billboard component for spatial segmentation - keeps it facing the camera
+    /// Also tracks quality metrics for smart auto-update
     /// </summary>
     public class SpatialSegmentationBillboard : MonoBehaviour
     {
         public string ClassName { get; set; }
+
+        // Quality metrics for smart auto-update
+        public float Confidence { get; set; }
+        public float Coverage { get; set; }  // Normalized width * height (how much of view the object covers)
+        public float QualityScore => Confidence * 0.7f + Coverage * 0.3f; // Combined quality metric
 
         [Tooltip("If true, billboard fully faces camera. If false, only rotates on Y axis (stays upright)")]
         public bool FullBillboard = true;
@@ -446,25 +638,25 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             Vector3 cameraPos = m_cameraRig.centerEyeAnchor.position;
 
-            if (FullBillboard)
-            {
-                // Full billboard - always face camera directly (like a sprite)
-                // This handles sitting/standing and looking from any angle
-                transform.LookAt(cameraPos);
-                // Flip 180 degrees because LookAt makes Z point AT camera, but we want to FACE camera
-                transform.Rotate(0, 180, 0);
-            }
-            else
-            {
-                // Y-axis only billboard - stays upright
-                Vector3 toCamera = cameraPos - transform.position;
-                toCamera.y = 0;
+            //if (FullBillboard)
+            //{
+            //    // Full billboard - always face camera directly (like a sprite)
+            //    // This handles sitting/standing and looking from any angle
+            //    transform.LookAt(cameraPos);
+            //    // Flip 180 degrees because LookAt makes Z point AT camera, but we want to FACE camera
+            //    transform.Rotate(0, 180, 0);
+            //}
+            //else
+            //{
+            //    // Y-axis only billboard - stays upright
+            //    Vector3 toCamera = cameraPos - transform.position;
+            //    toCamera.y = 0;
 
-                if (toCamera.sqrMagnitude > 0.001f)
-                {
-                    transform.rotation = Quaternion.LookRotation(-toCamera.normalized, Vector3.up);
-                }
-            }
+            //    if (toCamera.sqrMagnitude > 0.001f)
+            //    {
+            //        transform.rotation = Quaternion.LookRotation(-toCamera.normalized, Vector3.up);
+            //    }
+            //}
         }
     }
 }

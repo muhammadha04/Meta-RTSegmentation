@@ -47,6 +47,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // Metadata
             public string Label;
             public string ClassName;
+            public float Confidence;  // Detection confidence score
 
             // World-space data
             public Vector3? WorldPos;
@@ -62,6 +63,9 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             // Estimated real-world dimensions in meters
             public float EstimatedWorldWidth;
             public float EstimatedWorldHeight;
+
+            // Coverage metric (how much of the view the object covers)
+            public float Coverage => NormalizedWidth * NormalizedHeight;
         }
 
         #region Unity Functions
@@ -89,11 +93,11 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         {
             m_displayImage.texture = image;
             m_detectionCanvas.CapturePosition();
+            m_detectionCanvas.UpdatePosition();
         }
 
         public void DrawUIBoxes(Tensor<float> output, Tensor<float> prototypeMasks, float imageWidth, float imageHeight, Pose cameraPose)
         {
-            m_detectionCanvas.UpdatePosition();
             ClearAnnotations();
 
             Debug.Log($"DEBUG: output.shape = {output.shape}");
@@ -115,9 +119,8 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
                 if (confidence < 0.75f)
                     continue;
-                //classId != 43 && classId != 62 && classId != 67 && classId != 64 && classId != 66 && classId != 56
-                //64mouse,66keyboard,56 chair
-                if (classId != 56 && classId != 66 && classId != 64)
+
+                if (classId != 64 && classId != 66)
                     continue;
 
                 candidates.Add(new DetectionCandidate
@@ -246,6 +249,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     CenterX = centerX,
                     CenterY = centerY,
                     ClassName = classname,
+                    Confidence = candidate.Confidence,
                     Width = candidate.W * (displayWidth / imageWidth),
                     Height = candidate.H * (displayHeight / imageHeight),
                     Label = $"Class: {classname} Conf: {candidate.Confidence:F2}",
