@@ -120,7 +120,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 if (confidence < 0.75f)
                     continue;
 
-                if (classId != 64 && classId != 66)
+                if (classId != 64 && classId != 66 && classId != 62)
                     continue;
 
                 candidates.Add(new DetectionCandidate
