@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // Updated with spatial segmentation support - stores world-space dimensions
+// Added distance-based outline rendering for live segmentations
 
 using System.Collections.Generic;
 using Meta.XR;
@@ -18,6 +19,12 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [SerializeField] private EnvironmentRayCastSampleManager m_environmentRaycast;
         [SerializeField] private PassthroughCameraAccess m_cameraAccess;
 
+        [Header("Anchored Segmentation Filter")]
+        [Tooltip("Reference to DetectionManager to check for anchored segmentations")]
+        [SerializeField] private DetectionManager m_detectionManager;
+        [Tooltip("Hide live segmentation if anchored version exists within this distance")]
+        [SerializeField] private float m_anchorFilterDistance = 0.5f;
+
         [Header("UI display references")]
         [SerializeField] private SentisObjectDetectedUiManager m_detectionCanvas;
         [SerializeField] private RawImage m_displayImage;
@@ -26,15 +33,45 @@ namespace PassthroughCameraSamples.MultiObjectDetection
         [SerializeField] private Font m_font;
         [SerializeField] private Color m_fontColor;
         [SerializeField] private int m_fontSize = 80;
+
+        [Header("Distance-Based Live Segmentation")]
+        [Tooltip("Enable distance-based outline switching for live segmentations")]
+        [SerializeField] private bool m_enableLiveDistanceRendering = true;
+        [Tooltip("Distance threshold (meters) to switch to outline mode")]
+        [SerializeField] private float m_liveOutlineDistanceThreshold = 0.5f;
+        [Tooltip("Outline border width in mask pixels")]
+        [Range(1, 15)]
+        [SerializeField] private int m_liveOutlineWidthPixels = 3;
+
+        [Header("Adaptive Color Contrast")]
+        [Tooltip("Enable Delta E based color selection for maximum contrast")]
+        [SerializeField] private bool m_enableAdaptiveColor = true;
+        [Tooltip("Number of background samples for color averaging")]
+        [SerializeField] private int m_colorSampleCount = 16;
+        [Tooltip("Alpha for segmentation overlay")]
+        [Range(0.3f, 1.0f)]
+        [SerializeField] private float m_segmentationAlpha = 0.7f;
+
         [Space(10)]
         public UnityEvent<int> OnObjectsDetected;
 
         public List<BoundingBox> BoxDrawn = new();
-
+        private bool m_isLiveUiVisible = true;
         private string[] m_labels;
         private List<GameObject> m_boxPool = new();
         private Transform m_displayLocation;
+        private Pose m_lastCaptureCameraPose;
+        private OVRCameraRig m_cameraRig;
+        public void ToggleLiveUiVisibility()
+        {
+            m_isLiveUiVisible = !m_isLiveUiVisible;
 
+            // Immediate cleanup if turning off
+            if (!m_isLiveUiVisible)
+            {
+                ClearAnnotations();
+            }
+        }
         // Bounding box data with spatial segmentation support
         public struct BoundingBox
         {
@@ -43,18 +80,21 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             public float CenterY;
             public float Width;
             public float Height;
+            public Vector3? SurfaceNormal { get; set; }
 
             // Metadata
             public string Label;
             public string ClassName;
-            public float Confidence;  // Detection confidence score
+            public float Confidence;
 
             // World-space data
             public Vector3? WorldPos;
+            public Pose CaptureCameraPose;
 
             // Segmentation data
             public float[] MaskCoefficients;
-            public Texture2D SegmentationMask;
+            public Texture2D SegmentationMask;        // Solid fill texture
+            public Texture2D SegmentationMaskOutline; // Outline-only texture
 
             // Normalized coordinates (0-1 range) for world-space estimation
             public float NormalizedWidth;
@@ -68,10 +108,24 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             public float Coverage => NormalizedWidth * NormalizedHeight;
         }
 
+        // Track which texture mode each box is currently showing
+        private Dictionary<int, SegmentationRenderMode> m_currentBoxModes = new();
+
         #region Unity Functions
         private void Start()
         {
             m_displayLocation = m_displayImage.transform;
+            Debug.Log($"DEBUG-LIVE-SEG: [INIT] SentisInferenceUiManager started");
+            Debug.Log($"DEBUG-LIVE-SEG: [INIT] LiveDistanceRendering={m_enableLiveDistanceRendering}, Threshold={m_liveOutlineDistanceThreshold}m, OutlinePixels={m_liveOutlineWidthPixels}");
+        }
+
+        private void Update()
+        {
+            // Update live segmentation textures based on distance
+            if (m_enableLiveDistanceRendering && BoxDrawn.Count > 0)
+            {
+                UpdateLiveSegmentationsByDistance();
+            }
         }
         #endregion
 
@@ -98,16 +152,24 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
         public void DrawUIBoxes(Tensor<float> output, Tensor<float> prototypeMasks, float imageWidth, float imageHeight, Pose cameraPose)
         {
+            // 3. ADD THIS CHECK AT THE VERY TOP OF THE FUNCTION
+            if (!m_isLiveUiVisible)
+            {
+                ClearAnnotations();
+                OnObjectsDetected?.Invoke(0);
+                return; // Skip all calculation and drawing
+            }
             ClearAnnotations();
+            m_lastCaptureCameraPose = cameraPose;
 
-            Debug.Log($"DEBUG: output.shape = {output.shape}");
-            Debug.Log($"DEBUG: prototypeMasks.shape = {prototypeMasks.shape}");
+            Debug.Log($"DEBUG-DETECTION: output.shape = {output.shape}");
+            Debug.Log($"DEBUG-DETECTION: prototypeMasks.shape = {prototypeMasks.shape}");
 
             float displayWidth = m_displayImage.rectTransform.rect.width;
             var displayHeight = m_displayImage.rectTransform.rect.height;
 
             var boxesFound = output.shape[2];
-            Debug.Log($"DEBUG: Total anchor boxes = {boxesFound}");
+            Debug.Log($"DEBUG-DETECTION: Total anchor boxes = {boxesFound}");
 
             List<DetectionCandidate> candidates = new List<DetectionCandidate>();
 
@@ -120,7 +182,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 if (confidence < 0.75f)
                     continue;
 
-                if (classId != 64 && classId != 66 && classId != 62)
+                if (classId != 66)
                     continue;
 
                 candidates.Add(new DetectionCandidate
@@ -137,7 +199,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             List<DetectionCandidate> filteredCandidates = ApplyNMS(candidates, 0.5f);
 
-            Debug.Log($"DEBUG: Before NMS: {candidates.Count}, After NMS: {filteredCandidates.Count}");
+            Debug.Log($"DEBUG-DETECTION: Before NMS: {candidates.Count}, After NMS: {filteredCandidates.Count}");
 
             int validDetections = 0;
             foreach (var candidate in filteredCandidates)
@@ -218,7 +280,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                         }
                     }
 
-                    Debug.Log($"DEBUG: {classname} world size estimate: {estimatedWorldWidth:F3}m x {estimatedWorldHeight:F3}m");
+                    Debug.Log($"DEBUG-DETECTION: {classname} world size estimate: {estimatedWorldWidth:F3}m x {estimatedWorldHeight:F3}m");
                 }
 
                 // Extract mask coefficients
@@ -231,18 +293,69 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 // Generate segmentation mask
                 float[,] rawMask = SegmentationProcessor.GenerateMask(maskCoeffs, prototypeMasks);
 
-                Color maskColor = candidate.ClassId == 0 ? new Color(0, 1, 0, 0.5f) : new Color(0, 0, 1, 0.5f);
+                // Determine mask color using Delta E contrast if enabled
+                Color maskColor;
+                if (m_enableAdaptiveColor)
+                {
+                    // Sample background color from camera texture at object location
+                    Rect sampleRect = new Rect(
+                        normalizedCenterX - normalizedWidth / 2f,
+                        normalizedCenterY - normalizedHeight / 2f,
+                        normalizedWidth,
+                        normalizedHeight
+                    );
 
-                Texture2D maskTexture = SegmentationProcessor.MaskToTexture(
-                    rawMask,
-                    maskColor,
-                    candidate.X,
-                    candidate.Y,
-                    candidate.W,
-                    candidate.H,
-                    imageWidth,
-                    imageHeight
-                );
+                    Texture cameraTexture = m_displayImage.texture;
+                    Color bgColor = SegmentationColorContrast.SampleBackgroundFromTexture(cameraTexture, sampleRect, m_colorSampleCount);
+                    maskColor = SegmentationColorContrast.GetBestContrastColor(bgColor, m_segmentationAlpha);
+
+                    Debug.Log($"DEBUG-COLOR: [LIVE] '{classname}' - Background sampled, contrast color selected");
+                }
+                else
+                {
+                    // Fallback to class-based color
+                    maskColor = candidate.ClassId == 0 ? new Color(0, 1, 0, m_segmentationAlpha) : new Color(0, 0, 1, m_segmentationAlpha);
+                }
+
+                // Generate both solid and outline textures for live distance-based rendering
+                Texture2D solidTexture;
+                Texture2D outlineTexture;
+
+                if (m_enableLiveDistanceRendering)
+                {
+                    Debug.Log($"DEBUG-LIVE-SEG: [TEXTURE-GEN] Generating both textures for '{classname}'");
+
+                    SegmentationProcessor.GenerateBothTextures(
+                        rawMask,
+                        maskColor,
+                        candidate.X,
+                        candidate.Y,
+                        candidate.W,
+                        candidate.H,
+                        imageWidth,
+                        imageHeight,
+                        m_liveOutlineWidthPixels,
+                        out solidTexture,
+                        out outlineTexture
+                    );
+
+                    Debug.Log($"DEBUG-LIVE-SEG: [TEXTURE-GEN] Solid: {solidTexture?.width}x{solidTexture?.height}, Outline: {outlineTexture?.width}x{outlineTexture?.height}");
+                }
+                else
+                {
+                    // Original behavior - only solid texture
+                    solidTexture = SegmentationProcessor.MaskToTexture(
+                        rawMask,
+                        maskColor,
+                        candidate.X,
+                        candidate.Y,
+                        candidate.W,
+                        candidate.H,
+                        imageWidth,
+                        imageHeight
+                    );
+                    outlineTexture = null;
+                }
 
                 var box = new BoundingBox
                 {
@@ -254,8 +367,10 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     Height = candidate.H * (displayHeight / imageHeight),
                     Label = $"Class: {classname} Conf: {candidate.Confidence:F2}",
                     WorldPos = worldPos,
+                    CaptureCameraPose = m_lastCaptureCameraPose,
                     MaskCoefficients = maskCoeffs,
-                    SegmentationMask = maskTexture,
+                    SegmentationMask = solidTexture,
+                    SegmentationMaskOutline = outlineTexture,
                     NormalizedWidth = normalizedWidth,
                     NormalizedHeight = normalizedHeight,
                     EstimatedWorldWidth = estimatedWorldWidth,
@@ -270,7 +385,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                     break;
             }
 
-            Debug.Log($"DEBUG: Displayed {validDetections} valid detections");
+            Debug.Log($"DEBUG-DETECTION: Displayed {validDetections} valid detections");
             OnObjectsDetected?.Invoke(validDetections);
         }
 
@@ -356,6 +471,7 @@ namespace PassthroughCameraSamples.MultiObjectDetection
                 box?.SetActive(false);
             }
             BoxDrawn.Clear();
+            m_currentBoxModes.Clear();
         }
 
         private void DrawBox(BoundingBox box, int id)
@@ -389,14 +505,148 @@ namespace PassthroughCameraSamples.MultiObjectDetection
             label.text = box.Label;
             label.fontSize = 12;
 
-            // Segmentation mask on canvas
+            // Segmentation mask on canvas - determine which texture based on distance
             var maskImage = panel.transform.Find("SegmentationMask")?.GetComponent<RawImage>();
             if (maskImage != null && box.SegmentationMask != null)
             {
-                maskImage.texture = box.SegmentationMask;
+                // Check if there's already an anchored segmentation for this object
+                bool hasAnchoredVersion = HasAnchoredSegmentationNearby(box);
+
+                if (hasAnchoredVersion)
+                {
+                    // Hide live segmentation - anchored version exists
+                    maskImage.gameObject.SetActive(false);
+                    Debug.Log($"DEBUG-LIVE-SEG: [ANCHOR-FILTER] '{box.ClassName}' id={id} - Hiding live seg, anchored version exists");
+                    return;
+                }
+
+                // Determine initial texture based on distance
+                Texture2D initialTexture = box.SegmentationMask; // Default to solid
+                SegmentationRenderMode initialMode = SegmentationRenderMode.SolidFill;
+
+                if (m_enableLiveDistanceRendering && box.WorldPos.HasValue && box.SegmentationMaskOutline != null)
+                {
+                    float distance = GetDistanceToObject(box);
+
+                    if (distance <= m_liveOutlineDistanceThreshold)
+                    {
+                        initialTexture = box.SegmentationMaskOutline;
+                        initialMode = SegmentationRenderMode.OutlineOnly;
+                    }
+
+                    Debug.Log($"DEBUG-LIVE-SEG: [DRAW-BOX] '{box.ClassName}' id={id} - Distance={distance:F3}m, Threshold={m_liveOutlineDistanceThreshold}m, Mode={initialMode}");
+                }
+
+                maskImage.texture = initialTexture;
                 maskImage.transform.localRotation = Quaternion.identity;
                 maskImage.gameObject.SetActive(true);
+
+                // Track current mode
+                m_currentBoxModes[id] = initialMode;
             }
+        }
+
+        /// <summary>
+        /// Check if there's an anchored segmentation nearby for the same class
+        /// </summary>
+        private bool HasAnchoredSegmentationNearby(BoundingBox box)
+        {
+            if (m_detectionManager == null || !box.WorldPos.HasValue)
+                return false;
+
+            return m_detectionManager.HasAnchoredSegmentationAt(box.WorldPos.Value, box.ClassName, m_anchorFilterDistance);
+        }
+
+        /// <summary>
+        /// Update live segmentation textures based on current distance to user
+        /// Called every frame when distance-based rendering is enabled
+        /// </summary>
+        private void UpdateLiveSegmentationsByDistance()
+        {
+            if (m_cameraRig == null)
+            {
+                m_cameraRig = FindFirstObjectByType<OVRCameraRig>();
+                if (m_cameraRig == null)
+                {
+                    if (Time.frameCount % 60 == 0)
+                    {
+                        Debug.LogWarning("DEBUG-LIVE-SEG: [UPDATE] OVRCameraRig not found!");
+                    }
+                    return;
+                }
+            }
+
+            for (int i = 0; i < BoxDrawn.Count && i < m_boxPool.Count; i++)
+            {
+                var box = BoxDrawn[i];
+                var panel = m_boxPool[i];
+
+                if (panel == null || !panel.activeInHierarchy)
+                    continue;
+
+                if (!box.WorldPos.HasValue || box.SegmentationMaskOutline == null)
+                    continue;
+
+                var maskImage = panel.transform.Find("SegmentationMask")?.GetComponent<RawImage>();
+                if (maskImage == null || !maskImage.gameObject.activeInHierarchy)
+                    continue;
+
+                // Calculate current distance
+                float distance = GetDistanceToObject(box);
+
+                // Determine target mode
+                SegmentationRenderMode targetMode = distance <= m_liveOutlineDistanceThreshold
+                    ? SegmentationRenderMode.OutlineOnly
+                    : SegmentationRenderMode.SolidFill;
+
+                // Get current mode
+                SegmentationRenderMode currentMode = SegmentationRenderMode.SolidFill;
+                if (m_currentBoxModes.ContainsKey(i))
+                {
+                    currentMode = m_currentBoxModes[i];
+                }
+
+                // Log distance periodically
+                if (Time.frameCount % 30 == 0)
+                {
+                    Debug.Log($"DEBUG-LIVE-SEG: [DISTANCE] '{box.ClassName}' id={i} - Distance={distance:F3}m, Threshold={m_liveOutlineDistanceThreshold}m, CurrentMode={currentMode}");
+                }
+
+                // Switch texture if mode changed
+                if (targetMode != currentMode)
+                {
+                    Texture2D targetTexture = targetMode == SegmentationRenderMode.SolidFill
+                        ? box.SegmentationMask
+                        : box.SegmentationMaskOutline;
+
+                    if (targetTexture != null)
+                    {
+                        maskImage.texture = targetTexture;
+                        m_currentBoxModes[i] = targetMode;
+
+                        Debug.Log($"DEBUG-LIVE-SEG: [MODE-CHANGE] '{box.ClassName}' id={i} - Switching {currentMode} -> {targetMode} at distance {distance:F3}m");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Calculate distance from user to detected object
+        /// </summary>
+        private float GetDistanceToObject(BoundingBox box)
+        {
+            if (!box.WorldPos.HasValue)
+                return float.MaxValue;
+
+            if (m_cameraRig == null)
+            {
+                m_cameraRig = FindFirstObjectByType<OVRCameraRig>();
+                if (m_cameraRig == null)
+                    return float.MaxValue;
+            }
+
+            Vector3 userPos = m_cameraRig.centerEyeAnchor.position;
+            return Vector3.Distance(userPos, box.WorldPos.Value);
         }
 
         private GameObject CreateNewBox(Color color)
@@ -442,6 +692,26 @@ namespace PassthroughCameraSamples.MultiObjectDetection
 
             m_boxPool.Add(panel);
             return panel;
+        }
+        #endregion
+
+        #region Public Settings Access
+        /// <summary>
+        /// Update live outline distance threshold at runtime
+        /// </summary>
+        public void SetLiveOutlineDistanceThreshold(float distance)
+        {
+            m_liveOutlineDistanceThreshold = Mathf.Max(0.1f, distance);
+            Debug.Log($"DEBUG-LIVE-SEG: [SETTINGS] Live outline threshold updated to {m_liveOutlineDistanceThreshold}m");
+        }
+
+        /// <summary>
+        /// Enable/disable live distance-based rendering
+        /// </summary>
+        public void SetLiveDistanceRenderingEnabled(bool enabled)
+        {
+            m_enableLiveDistanceRendering = enabled;
+            Debug.Log($"DEBUG-LIVE-SEG: [SETTINGS] Live distance rendering {(enabled ? "ENABLED" : "DISABLED")}");
         }
         #endregion
     }
